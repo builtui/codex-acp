@@ -541,4 +541,46 @@ Moved to: /test/project/NewFile.kt`,
             ],
         });
     });
+
+    it('should send compact git patches when the client supports diffPatch', async () => {
+        const updateEvent = await createFileChangeUpdate({
+            type: 'fileChange',
+            id: 'file-change-patches',
+            changes: [
+                {path: '/test/New.kt', kind: {type: 'add'}, diff: 'new line\n'},
+                {path: '/test/Old.kt', kind: {type: 'delete'}, diff: 'old line\n'},
+                {
+                    path: '/test/Edit.kt',
+                    kind: {type: 'update', move_path: null},
+                    diff: '@@ -1 +1 @@\n-old line\n+new line\n',
+                },
+            ],
+            status: 'completed',
+        }, true);
+
+        expect(updateEvent.sessionUpdate).toBe('tool_call');
+        if (updateEvent.sessionUpdate !== 'tool_call') throw new Error('Expected a tool call');
+        const contentBlocks = updateEvent.content ?? [];
+        expect(contentBlocks).toHaveLength(3);
+        for (const content of contentBlocks) {
+            expect(content).toMatchObject({
+                type: 'diff',
+                oldText: null,
+                newText: '',
+                _meta: {
+                    jetbrains: {
+                        air: {
+                            version: 1,
+                            diffPatch: {version: 1, format: 'git_patch'},
+                        },
+                    },
+                },
+            });
+            expect(JSON.stringify(content)).not.toContain('diffStats');
+        }
+        const patches = contentBlocks.map((block) => (block._meta as any).jetbrains.air.diffPatch.text);
+        expect(patches[0]).toContain('--- /dev/null');
+        expect(patches[1]).toContain('+++ /dev/null');
+        expect(patches[2]).toContain('@@ -1 +1 @@');
+    });
 });

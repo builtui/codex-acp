@@ -1,7 +1,7 @@
 import type { ContentBlock, ToolCallContent } from "@agentclientprotocol/sdk";
 import { applyPatch, parsePatch, reversePatch, type StructuredPatch } from "diff";
 import { DiffStatsCalculator } from "./DiffStats";
-import { AIR_DIFF_STATS_KEY, withAirMeta } from "./AirExtension";
+import { AIR_DIFF_PATCH_KEY, AIR_DIFF_STATS_KEY, withAirMeta } from "./AirExtension";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { UpdateSessionEvent } from "./ACPSessionConnection";
@@ -66,11 +66,12 @@ function toAcpStatus(status: CodexItemStatus): AcpToolCallStatus {
 }
 
 export async function createFileChangeUpdate(
-    item: ThreadItem & { type: "fileChange" }
+    item: ThreadItem & { type: "fileChange" },
+    supportsDiffPatch = false,
 ): Promise<UpdateSessionEvent> {
     const patches: ToolCallContent[] = [];
     for (const change of item.changes) {
-        const content = await createPatchContent(change);
+        const content = await createPatchContent(change, supportsDiffPatch);
         if (content) patches.push(content);
         // ignore unparseable diffs
     }
@@ -829,15 +830,18 @@ function createContent(content: ContentBlock): ToolCallContent {
     };
 }
 
-async function createPatchContent(change: FileUpdateChange): Promise<ToolCallContent | null> {
+async function createPatchContent(
+    change: FileUpdateChange,
+    supportsDiffPatch: boolean,
+): Promise<ToolCallContent | null> {
     try {
         switch (change.kind.type) {
             case "add":
-                return await createAddFileContent(change);
+                return await createAddFileContent(change, supportsDiffPatch);
             case "delete":
-                return await createDeleteFileContent(change);
+                return await createDeleteFileContent(change, supportsDiffPatch);
             case "update":
-                return await createUpdateFileContent(change);
+                return await createUpdateFileContent(change, supportsDiffPatch);
         }
     } catch (error) {
         logger.log(`Error processing file update change: ${error}`);
@@ -845,7 +849,17 @@ async function createPatchContent(change: FileUpdateChange): Promise<ToolCallCon
     }
 }
 
-async function createAddFileContent(change: FileUpdateChange): Promise<ToolCallContent | null> {
+async function createAddFileContent(
+    change: FileUpdateChange,
+    supportsDiffPatch: boolean,
+): Promise<ToolCallContent | null> {
+    if (supportsDiffPatch) {
+        return createPatchOnlyContent(
+            change.path,
+            "add",
+            createWholeFilePatch(change.path, null, change.diff),
+        );
+    }
     return {
         type: "diff",
         oldText: null,
@@ -855,7 +869,10 @@ async function createAddFileContent(change: FileUpdateChange): Promise<ToolCallC
     };
 }
 
-async function createUpdateFileContent(change: FileUpdateChange): Promise<ToolCallContent | null> {
+async function createUpdateFileContent(
+    change: FileUpdateChange,
+    supportsDiffPatch: boolean,
+): Promise<ToolCallContent | null> {
     if (change.kind.type !== "update") return null;
 
     const unifiedDiff = recoverCorruptedDiff(change.diff);
@@ -863,6 +880,15 @@ async function createUpdateFileContent(change: FileUpdateChange): Promise<ToolCa
     if (patches.length !== 1) return null;
     const patch = patches[0]!;
     const movePath = change.kind.move_path;
+
+    if (supportsDiffPatch) {
+        const targetPath = movePath ?? change.path;
+        return createPatchOnlyContent(
+            targetPath,
+            "update",
+            withGitPatchHeader(change.path, targetPath, unifiedDiff),
+        );
+    }
 
     const oldContent = await readFileContent(change.path);
     if (oldContent !== null) {
@@ -900,7 +926,17 @@ function createUpdateDiffContent(path: string, oldText: string, newText: string,
     };
 }
 
-async function createDeleteFileContent(change: FileUpdateChange): Promise<ToolCallContent> {
+async function createDeleteFileContent(
+    change: FileUpdateChange,
+    supportsDiffPatch: boolean,
+): Promise<ToolCallContent> {
+    if (supportsDiffPatch) {
+        return createPatchOnlyContent(
+            change.path,
+            "delete",
+            createWholeFilePatch(change.path, change.diff, null),
+        );
+    }
     return {
         type: "diff",
         oldText: change.diff, // app-server always returns file content instead of diff
@@ -908,6 +944,52 @@ async function createDeleteFileContent(change: FileUpdateChange): Promise<ToolCa
         path: change.path,
         _meta: withAirMeta({ kind: "delete" }, AIR_DIFF_STATS_KEY, DIFF_STATS.deletedFile(change.diff))
     }
+}
+
+function createPatchOnlyContent(path: string, kind: string, patch: string): ToolCallContent {
+    return {
+        type: "diff",
+        oldText: null,
+        newText: "",
+        path,
+        _meta: withAirMeta({ kind }, AIR_DIFF_PATCH_KEY, {
+            version: 1,
+            format: "git_patch",
+            text: patch,
+        }),
+    };
+}
+
+function withGitPatchHeader(oldPath: string, newPath: string, diff: string): string {
+    const body = diff.startsWith("--- ")
+        ? diff
+        : `--- a/${oldPath}\n+++ b/${newPath}\n${diff}`;
+    return `diff --git a/${oldPath} b/${newPath}\n${body.replace(/\n?$/, "\n")}`;
+}
+
+function createWholeFilePatch(path: string, oldText: string | null, newText: string | null): string {
+    const oldLines = splitPatchLines(oldText);
+    const newLines = splitPatchLines(newText);
+    const oldRange = oldLines.length === 0 ? "0,0" : `1,${oldLines.length}`;
+    const newRange = newLines.length === 0 ? "0,0" : `1,${newLines.length}`;
+    return [
+        `diff --git a/${path} b/${path}`,
+        `--- ${oldText === null ? "/dev/null" : `a/${path}`}`,
+        `+++ ${newText === null ? "/dev/null" : `b/${path}`}`,
+        `@@ -${oldRange} +${newRange} @@`,
+        ...oldLines.map((line) => `-${line}`),
+        ...newLines.map((line) => `+${line}`),
+        "",
+    ].join("\n");
+}
+
+function splitPatchLines(text: string | null): string[] {
+    if (!text) return [];
+    return text
+        .replace(/\r\n/g, "\n")
+        .replace(/\r/g, "\n")
+        .replace(/\n$/, "")
+        .split("\n");
 }
 
 async function readFileContent(filePath: string): Promise<string | null> {
