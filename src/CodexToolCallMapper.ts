@@ -1,7 +1,6 @@
 import type { ContentBlock, ToolCallContent } from "@agentclientprotocol/sdk";
-import { applyPatch, parsePatch, reversePatch, type StructuredPatch } from "diff";
-import { DiffStatsCalculator } from "./DiffStats";
-import { AIR_DIFF_PATCH_KEY, AIR_DIFF_STATS_KEY, withAirMeta } from "./AirExtension";
+import { applyPatch, parsePatch, reversePatch } from "diff";
+import { AIR_DIFF_PATCH_KEY, withAirMeta } from "./AirExtension";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { UpdateSessionEvent } from "./ACPSessionConnection";
@@ -50,8 +49,6 @@ type ContextCompactionItem = ThreadItem & { type: "contextCompaction" };
 type AcpToolCallEvent = Extract<UpdateSessionEvent, { sessionUpdate: "tool_call" }>;
 
 const CONTEXT_COMPACTION_META = createContextCompactionMeta();
-const DIFF_STATS = new DiffStatsCalculator();
-
 function toAcpStatus(status: CodexItemStatus): AcpToolCallStatus {
     switch (status) {
         case "inProgress":
@@ -865,7 +862,7 @@ async function createAddFileContent(
         oldText: null,
         newText: change.diff, // app-server always returns file content instead of diff
         path: change.path,
-        _meta: withAirMeta({ kind: "add" }, AIR_DIFF_STATS_KEY, DIFF_STATS.addedFile(change.diff)),
+        _meta: { kind: "add" },
     };
 }
 
@@ -898,11 +895,11 @@ async function createUpdateFileContent(
             // we can verify this by checking if the reverted patch applies.
             const revertedContent = applyPatch(oldContent, reversePatch(patch));
             if (revertedContent !== false) {
-                return createUpdateDiffContent(change.path, revertedContent, oldContent, patch);
+                return createUpdateDiffContent(change.path, revertedContent, oldContent);
             }
             return null;
         }
-        return createUpdateDiffContent(movePath ?? change.path, oldContent, patchedContent, patch);
+        return createUpdateDiffContent(movePath ?? change.path, oldContent, patchedContent);
     }
 
     if (!movePath) return null;
@@ -912,17 +909,16 @@ async function createUpdateFileContent(
     const revertedContent = applyPatch(newContent, reversePatch(patch));
     if (revertedContent === false) return null;
 
-    return createUpdateDiffContent(movePath, revertedContent, newContent, patch);
+    return createUpdateDiffContent(movePath, revertedContent, newContent);
 }
 
-function createUpdateDiffContent(path: string, oldText: string, newText: string, patch: StructuredPatch): ToolCallContent {
-    const stats = DIFF_STATS.update(patch);
+function createUpdateDiffContent(path: string, oldText: string, newText: string): ToolCallContent {
     return {
         type: "diff",
         oldText,
         newText,
         path,
-        _meta: stats ? withAirMeta({ kind: "update" }, AIR_DIFF_STATS_KEY, stats) : { kind: "update" },
+        _meta: { kind: "update" },
     };
 }
 
@@ -942,7 +938,7 @@ async function createDeleteFileContent(
         oldText: change.diff, // app-server always returns file content instead of diff
         newText: "",
         path: change.path,
-        _meta: withAirMeta({ kind: "delete" }, AIR_DIFF_STATS_KEY, DIFF_STATS.deletedFile(change.diff))
+        _meta: { kind: "delete" },
     }
 }
 

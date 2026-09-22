@@ -269,10 +269,10 @@ describe('CodexEventHandler - file change events', () => {
     });
 
     it.each([
-        { name: 'before application', disk: 'old\n', expected: { version: 1, added: 2, removed: 1 } },
-        { name: 'after application', disk: 'new\nextra\n', expected: { version: 1, added: 2, removed: 1 } },
-        { name: 'a relocated hunk', disk: 'prefix\nold\n', expected: { version: 1, added: 2, removed: 1 } },
-    ])('publishes reliable update statistics $name', async ({ disk, expected }) => {
+        { name: 'before application', disk: 'old\n' },
+        { name: 'after application', disk: 'new\nextra\n' },
+        { name: 'a relocated hunk', disk: 'prefix\nold\n' },
+    ])('publishes legacy update text $name', async ({ disk }) => {
         mockFileContent('/test/project/OldFile.kt', disk);
         const event = await createFileChangeUpdate({
             type: 'fileChange',
@@ -287,10 +287,7 @@ describe('CodexEventHandler - file change events', () => {
         expect(event.sessionUpdate).toBe('tool_call');
         if (event.sessionUpdate !== 'tool_call') throw new Error('Expected a file-change tool call');
         expect(event.content).toHaveLength(1);
-        expect(event.content![0]!._meta).toEqual({
-            kind: 'update',
-            ...(expected ? { jetbrains: { air: { version: 1, diffStats: expected } } } : {}),
-        });
+        expect(event.content![0]!._meta).toEqual({ kind: 'update' });
     });
 
     it('should ignore broken unified diffs in update file changes', async () => {
@@ -576,7 +573,6 @@ Moved to: /test/project/NewFile.kt`,
                     },
                 },
             });
-            expect(JSON.stringify(content)).not.toContain('diffStats');
         }
         const patches = contentBlocks.map((block) => (block._meta as any).jetbrains.air.diffPatch.text);
         expect(patches[0]).toContain('--- /dev/null');
