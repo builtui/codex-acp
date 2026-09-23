@@ -40,6 +40,7 @@ import type {
 } from "./app-server/v2";
 import type { McpStartupCompleteEvent } from "./app-server/McpStartupCompleteEvent";
 import {toTokenCount} from "./TokenCount";
+import {isValidTokenTotal} from "./PromptTokenUsage";
 import {
     commandExecutionUsesTerminalOutput,
     createCommandExecutionUpdate,
@@ -1406,8 +1407,17 @@ export class CodexEventHandler {
     }
 
     private handleTokenUsageUpdated(params: ThreadTokenUsageUpdatedNotification): void {
+        if (params.threadId === this.sessionState.sessionId
+            && params.turnId === this.sessionState.currentTurnId) {
+            this.sessionState.promptTokenUsage?.observe(params.tokenUsage);
+        } else if (params.threadId === this.sessionState.sessionId && this.sessionState.currentTurnId === null) {
+            this.sessionState.promptTokenUsage?.restoreBaseline(toTokenCount(params.tokenUsage.total));
+        }
         this.sessionState.lastTokenUsage = toTokenCount(params.tokenUsage.last);
-        this.sessionState.totalTokenUsage = toTokenCount(params.tokenUsage.total);
+        const total = toTokenCount(params.tokenUsage.total);
+        if (isValidTokenTotal(total, this.sessionState.totalTokenUsage)) {
+            this.sessionState.totalTokenUsage = total;
+        }
         this.sessionState.modelContextWindow = params.tokenUsage.modelContextWindow;
     }
 
