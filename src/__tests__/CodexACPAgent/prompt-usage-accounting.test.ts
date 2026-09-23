@@ -76,6 +76,13 @@ describe("prompt usage accounting", () => {
         expect(result.usage?.totalTokens).toBe(230);
     });
 
+    it("does not report a definitive zero for status-only snapshots", async () => {
+        await turn("one", [usage("one", count(100, 20))]);
+        const result = await turn("two", [usage("two", count(100, 20))]);
+        expect(result.usage).toBeNull();
+        expect(result._meta?.["usageAccounting"]).toMatchObject({completeness: "partial"});
+    });
+
     it("keeps a missing resume baseline partial instead of charging historical last usage", async () => {
         fixture.getCodexAcpAgent().getSessionState(threadId).totalTokenUsage = null;
         const result = await turn("resumed", [

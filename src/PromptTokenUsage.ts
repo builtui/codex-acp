@@ -47,6 +47,10 @@ export class PromptTokenUsage {
         }
         const delta = {...total};
         for (const field of fields) delta[field] -= previous[field];
+        if (fields.every(field => delta[field] === 0)) {
+            // A rate-limit/status notification is not a model request.
+            return;
+        }
         const next = {...(this.counts ?? ZERO_TOKEN_COUNT)};
         for (const field of fields) next[field] += delta[field];
         if (fields.some(field => !Number.isSafeInteger(next[field]))) {
