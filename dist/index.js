@@ -27343,6 +27343,69 @@ function toPromptUsage(tokenCount) {
   };
 }
 
+// src/PromptTokenUsage.ts
+var fields = ["totalTokens", "inputTokens", "cachedInputTokens", "outputTokens", "reasoningOutputTokens"];
+var ZERO_TOKEN_COUNT = {
+  totalTokens: 0,
+  inputTokens: 0,
+  cachedInputTokens: 0,
+  outputTokens: 0,
+  reasoningOutputTokens: 0
+};
+function isValidTokenTotal(total, previous = null) {
+  if (fields.some((field) => !Number.isSafeInteger(total[field]) || total[field] < 0) || total.reasoningOutputTokens > total.outputTokens || total.totalTokens !== total.inputTokens + total.cachedInputTokens + total.outputTokens) {
+    return false;
+  }
+  return previous === null || fields.every((field) => total[field] >= previous[field]);
+}
+var PromptTokenUsage = class {
+  constructor(previous) {
+    this.previous = previous;
+  }
+  previous;
+  counts = null;
+  incomplete = false;
+  started = false;
+  restoreBaseline(total) {
+    if (!this.started && isValidTokenTotal(total, this.previous)) this.previous = total;
+  }
+  observe(usage) {
+    this.started = true;
+    const total = toTokenCount(usage.total);
+    const previous = this.previous;
+    if (!isValidTokenTotal(total, previous)) {
+      this.incomplete = true;
+      return;
+    }
+    if (previous === null) {
+      this.previous = total;
+      this.incomplete = true;
+      return;
+    }
+    const delta = { ...total };
+    for (const field of fields) delta[field] -= previous[field];
+    const next = { ...this.counts ?? ZERO_TOKEN_COUNT };
+    for (const field of fields) next[field] += delta[field];
+    if (fields.some((field) => !Number.isSafeInteger(next[field]))) {
+      this.incomplete = true;
+      return;
+    }
+    this.previous = total;
+    this.counts = next;
+  }
+  tokenCount() {
+    return this.counts;
+  }
+  accounting(interrupted = false) {
+    return {
+      version: 1,
+      source: "codex/thread-token-usage-delta",
+      scope: "root_thread_prompt",
+      completeness: interrupted || this.incomplete || this.counts === null ? "partial" : "reported"
+    };
+  }
+};
+
 // node_modules/diff/libesm/util/string.js
 function hasOnlyWinLineEndings(string4) {
   return string4.includes("\r\n") && !string4.startsWith("\n") && !string4.match(/[^\r]\n/);
@@ -30841,7 +30904,10 @@ ${event.stdin}
       this.sessionState.promptTokenUsage?.restoreBaseline(toTokenCount(params.tokenUsage.total));
     }
     this.sessionState.lastTokenUsage = toTokenCount(params.tokenUsage.last);
-    this.sessionState.totalTokenUsage = toTokenCount(params.tokenUsage.total);
+    const total = toTokenCount(params.tokenUsage.total);
+    if (isValidTokenTotal(total, this.sessionState.totalTokenUsage)) {
+      this.sessionState.totalTokenUsage = total;
+    }
     this.sessionState.modelContextWindow = params.tokenUsage.modelContextWindow;
   }
   createUsageUpdate(params) {
@@ -33480,7 +33546,9 @@ var CodexAcpClient = class {
     this.subagents = new CodexSubagentSubscriptions(codexClient);
     codexClient.onClientTransportEvent((event) => {
       if (event.eventType === "notification" && event.method === "thread/tokenUsage/updated") {
-        this.threadTokenUsage.set(event.params.threadId, toTokenCount(event.params.tokenUsage.total));
+        const total = toTokenCount(event.params.tokenUsage.total);
+        const previous = this.threadTokenUsage.get(event.params.threadId) ?? null;
+        if (isValidTokenTotal(total, previous)) this.threadTokenUsage.set(event.params.threadId, total);
       }
     });
   }
@@ -35446,62 +35514,6 @@ function createReasoningEffortConfigOption(supportedReasoningEfforts, currentEff
     ...recommendation ? { _meta: withAirMeta(void 0, AIR_RECOMMENDED_CONFIG_VALUE_KEY, recommendation) } : {}
   };
 }
-
-// src/PromptTokenUsage.ts
-var fields = ["totalTokens", "inputTokens", "cachedInputTokens", "outputTokens", "reasoningOutputTokens"];
-var ZERO_TOKEN_COUNT = {
-  totalTokens: 0,
-  inputTokens: 0,
-  cachedInputTokens: 0,
-  outputTokens: 0,
-  reasoningOutputTokens: 0
-};
-var PromptTokenUsage = class {
-  constructor(previous) {
-    this.previous = previous;
-  }
-  previous;
-  counts = null;
-  incomplete = false;
-  started = false;
-  restoreBaseline(total) {
-    if (!this.started) this.previous = total;
-  }
-  observe(usage) {
-    this.started = true;
-    const total = toTokenCount(usage.total);
-    const previous = this.previous;
-    this.previous = total;
-    if (previous === null) {
-      this.incomplete = true;
-      return;
-    }
-    const delta = { ...total };
-    for (const field of fields) delta[field] -= previous[field];
-    if (fields.some((field) => !Number.isSafeInteger(delta[field]) || delta[field] < 0) || delta.reasoningOutputTokens > delta.outputTokens || delta.totalTokens !== delta.inputTokens + delta.cachedInputTokens + delta.outputTokens) {
-      this.incomplete = true;
-      return;
-    }
-    const next = { ...this.counts ?? ZERO_TOKEN_COUNT };
-    for (const field of fields) next[field] += delta[field];
-    if (fields.some((field) => !Number.isSafeInteger(next[field]))) {
-      this.incomplete = true;
-      return;
-    }
-    this.counts = next;
-  }
-  tokenCount() {
-    return this.counts;
-  }
-  accounting(interrupted = false) {
-    return {
-      version: 1,
-      source: "codex/thread-token-usage-delta",
-      scope: "root_thread_prompt",
-      completeness: interrupted || this.incomplete || this.counts === null ? "partial" : "reported"
-    };
-  }
-};
 
 // src/CodexCommands.ts
 var GOAL_CONTINUATION_PROMPT = [{

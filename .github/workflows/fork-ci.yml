@@ -1,0 +1,31 @@
+name: Fork CI
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npx vitest run --no-file-parallelism --retry=0 src/__tests__/CodexACPAgent/prompt-usage-accounting.test.ts
+      - run: npm run build
+      - name: Verify committed adapter artifact
+        run: |
+          git diff --exit-code -- dist/index.js
+          tar -xOf release/codex-acp-1.13.0-builtui.1.tgz package/dist/index.js | cmp - dist/index.js

@@ -113,14 +113,25 @@ describe("prompt usage accounting", () => {
         expect(result._meta?.["jetbrains"]).toMatchObject({air: {sessionFailure: {severity: "error"}}});
     });
 
-    it("preserves known usage and marks counter replacement incomplete", async () => {
+    it("recovers after a rejected counter replacement without double charging", async () => {
         const result = await turn("one", [
             usage("one", count(100, 20)),
             usage("one", count(0, 0)),
             usage("one", count(200, 30)),
         ]);
-        expect(result.usage?.totalTokens).toBe(350);
+        expect(result.usage?.totalTokens).toBe(230);
         expect(result._meta?.["usageAccounting"]).toMatchObject({completeness: "partial"});
+    });
+
+    it("does not carry a rejected final snapshot into the next prompt", async () => {
+        const synthetic = {...count(0, 0), totalTokens: 128000};
+        const first = await turn("one", [usage("one", count(100, 20)), usage("one", synthetic)]);
+        expect(first.usage?.totalTokens).toBe(120);
+        expect(first._meta?.["usageAccounting"]).toMatchObject({completeness: "partial"});
+
+        const second = await turn("two", [usage("two", count(200, 30))]);
+        expect(second.usage?.totalTokens).toBe(110);
+        expect(second._meta?.["usageAccounting"]).toMatchObject({completeness: "reported"});
     });
 
     it("rejects synthetic context-full totals without inference counts", async () => {

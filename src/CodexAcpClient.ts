@@ -26,6 +26,7 @@ import type {ServiceTier} from "./app-server/ServiceTier";
 import type {JsonValue} from "./app-server/serde_json/JsonValue";
 import {ModelId} from "./ModelId";
 import {toTokenCount, type TokenCount} from "./TokenCount";
+import {isValidTokenTotal} from "./PromptTokenUsage";
 import {AgentMode} from "./AgentMode";
 import path from "node:path";
 import {logger} from "./Logger";
@@ -129,7 +130,9 @@ export class CodexAcpClient {
         // Capture restored totals even before the ACP session handler is installed.
         codexClient.onClientTransportEvent(event => {
             if (event.eventType === "notification" && event.method === "thread/tokenUsage/updated") {
-                this.threadTokenUsage.set(event.params.threadId, toTokenCount(event.params.tokenUsage.total));
+                const total = toTokenCount(event.params.tokenUsage.total);
+                const previous = this.threadTokenUsage.get(event.params.threadId) ?? null;
+                if (isValidTokenTotal(total, previous)) this.threadTokenUsage.set(event.params.threadId, total);
             }
         });
     }
